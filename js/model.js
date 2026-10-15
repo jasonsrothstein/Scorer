@@ -5,32 +5,30 @@ const RESULTS = {
   K: { id: 'K', label: 'Strikeout', short: 'K', group: 'primary', ab: true, so: true },
   FO: { id: 'FO', label: 'Flyout', short: 'FO', group: 'primary', ab: true },
   GO: { id: 'GO', label: 'Groundout', short: 'GO', group: 'primary', ab: true },
-  '1B': { id: '1B', label: 'Single', short: '1B', group: 'primary', ab: true, hit: true, tb: 1, rbi: [0, 1, 2, 3] },
-  '2B': { id: '2B', label: 'Double', short: '2B', group: 'primary', ab: true, hit: true, double: true, tb: 2, rbi: [0, 1, 2, 3] },
-  '3B': { id: '3B', label: 'Triple', short: '3B', group: 'primary', ab: true, hit: true, triple: true, tb: 3, rbi: [0, 1, 2, 3] },
-  HR: { id: 'HR', label: 'Home Run', short: 'HR', group: 'primary', ab: true, hit: true, hr: true, tb: 4, rbi: [1, 2, 3, 4] },
+  '1B': { id: '1B', label: 'Single', short: '1B', group: 'primary', ab: true, hit: true, tb: 1 },
+  '2B': { id: '2B', label: 'Double', short: '2B', group: 'primary', ab: true, hit: true, double: true, tb: 2 },
+  '3B': { id: '3B', label: 'Triple', short: '3B', group: 'primary', ab: true, hit: true, triple: true, tb: 3 },
+  HR: { id: 'HR', label: 'Home Run', short: 'HR', group: 'primary', ab: true, hit: true, hr: true, tb: 4, defaultRuns: 1 },
   DP: { id: 'DP', label: 'Double Play', short: 'DP', group: 'small', ab: true, gdp: true },
   BB: { id: 'BB', label: 'Walk', short: 'BB', group: 'small', bb: true },
   HBP: { id: 'HBP', label: 'Hit By Pitch', short: 'HBP', group: 'small', hbp: true },
-  SF: { id: 'SF', label: 'Sac Fly', short: 'SF', group: 'small', sf: true, rbiAuto: 1 },
+  SF: { id: 'SF', label: 'Sac Fly', short: 'SF', group: 'small', sf: true, defaultRuns: 1 },
 };
 
 function rbiFor(result, rbi) {
   const def = RESULTS[result];
   if (!def) throw new Error('Choose a result.');
-  if (def.rbiAuto != null) return def.rbiAuto;
-  if (Array.isArray(def.rbi)) {
-    const runs = Number(rbi);
-    if (!def.rbi.includes(runs)) throw new Error('Choose how many runs scored.');
-    return runs;
+  const runs = rbi == null ? (def.defaultRuns || 0) : Number(rbi);
+  if (!Number.isInteger(runs) || runs < 0 || runs > 4) {
+    throw new Error('Runs scored must be from 0 to 4.');
   }
-  return 0;
+  return runs;
 }
 
 function describeResult(pa) {
   const def = RESULTS[pa.result];
   if (!def) return pa.result;
-  if (def.rbi || def.rbiAuto != null) return `${def.label}, ${pa.rbi || 0} RBI`;
+  if (pa.rbi) return `${def.label}, ${pa.rbi} R`;
   return def.label;
 }
 
@@ -55,8 +53,10 @@ function gamePas(doc, gameId) {
 
 function gameStints(doc, gameId) {
   return doc.stints
-    .filter((stint) => stint.gameId === gameId)
-    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)) || a.id.localeCompare(b.id));
+    .map((stint, index) => ({ stint, index }))
+    .filter(({ stint }) => stint.gameId === gameId)
+    .sort((a, b) => String(a.stint.createdAt).localeCompare(String(b.stint.createdAt)) || a.index - b.index)
+    .map(({ stint }) => stint);
 }
 
 function currentPitcherId(doc, gameId) {
@@ -182,7 +182,8 @@ function updatePlateAppearance(doc, { id, result, rbi, pitcherId }) {
   const next = touch(doc);
   const pa = next.plateAppearances.find((item) => item.id === id);
   if (!pa) throw new Error('Plate appearance not found.');
-  const game = requireLiveGame(next, pa.gameId);
+  const game = next.games.find((item) => item.id === pa.gameId);
+  if (!game) throw new Error('Game not found.');
   if (!pitcherPool(game.opponentTeamId).some((player) => player.id === pitcherId)) {
     throw new Error('That pitcher is not in this game.');
   }
@@ -240,6 +241,22 @@ function lockGame(doc, gameId) {
   return next;
 }
 
+function deleteRun(doc, runId) {
+  const next = touch(doc);
+  if (!next.runs.some((run) => run.id === runId)) throw new Error('Challenge not found.');
+  const deletedAt = next.updatedAt;
+  const gameIds = new Set(next.games.filter((game) => game.runId === runId).map((game) => game.id));
+  next.tombstones.push({ type: 'run', id: runId, deletedAt });
+  for (const gameId of gameIds) next.tombstones.push({ type: 'game', id: gameId, deletedAt });
+  for (const pa of next.plateAppearances) {
+    if (gameIds.has(pa.gameId)) next.tombstones.push({ type: 'pa', id: pa.id, deletedAt });
+  }
+  for (const stint of next.stints) {
+    if (gameIds.has(stint.gameId)) next.tombstones.push({ type: 'stint', id: stint.id, deletedAt });
+  }
+  return applyTombstones(next);
+}
+
 function deleteGame(doc, gameId) {
   const next = touch(doc);
   if (!next.games.some((game) => game.id === gameId)) throw new Error('Game not found.');
@@ -261,6 +278,7 @@ export {
   changePitcher,
   currentPitcherId,
   deleteGame,
+  deleteRun,
   describeResult,
   endRun,
   gamePas,

@@ -155,6 +155,12 @@ function opsPlusFor(counts, splits, batterId, indexes) {
   return (100 * actual.ops) / expOps;
 }
 
+function eraOf(counts) {
+  const outs = counts.pa - counts.h - counts.bb - counts.hbp + counts.gdp;
+  if (outs <= 0) return null;
+  return (27 * counts.rbi) / outs;
+}
+
 function finishLine(playerId, counts, opsPlus) {
   const rates = ratesFromCounts(counts);
   return {
@@ -253,8 +259,12 @@ function pitchingLines(doc) {
     absorb(counts.get(pa.pitcherId), pa);
   }
   return [...apps.entries()].map(([playerId, games]) => {
-    const line = finishLine(playerId, counts.get(playerId) || freshCounts(), null);
+    const raw = counts.get(playerId) || freshCounts();
+    const line = finishLine(playerId, raw, null);
+    const era = eraOf(raw);
     line.gp = games.size;
+    line.era = era;
+    line.eraText = formatEra(era);
     return line;
   });
 }
@@ -268,6 +278,12 @@ function formatRate(value) {
   return text.startsWith('0.') ? text.slice(1) : text;
 }
 
+function formatEra(value) {
+  if (value == null || !Number.isFinite(value)) return '-.--';
+  const rounded = Math.round((Math.max(value, 0) + Number.EPSILON) * 100) / 100;
+  return rounded.toFixed(2);
+}
+
 function formatOpsPlus(value) {
   if (value == null || !Number.isFinite(value)) return '---';
   return String(Math.round(value));
@@ -276,6 +292,7 @@ function formatOpsPlus(value) {
 export {
   battingLines,
   battingSummary,
+  formatEra,
   formatOpsPlus,
   formatRate,
   pitchingLines,

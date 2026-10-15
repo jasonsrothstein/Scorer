@@ -5,6 +5,7 @@ import {
   changePitcher,
   currentPitcherId,
   deleteGame,
+  deleteRun,
   endRun,
   gamePas,
   lockGame,
@@ -19,9 +20,11 @@ import {
   finalAces,
   opponentChoices,
   pitcherPool,
+  pitcherRole,
   playersOnTeam,
+  teamMeta,
 } from './roster.js';
-import { battingLines, formatOpsPlus, formatRate, pitchingLines } from './stats.js';
+import { battingLines, formatEra, formatOpsPlus, formatRate, pitchingLines } from './stats.js';
 
 const teams = allTeamIds();
 assert.equal(teams.length, 12);
@@ -42,6 +45,11 @@ assert.deepEqual(opponentChoices('M'), ['P', 'Y', 'D', 'W', 'B']);
 assert.deepEqual(opponentChoices('Mr'), ['P', 'Y', 'D', 'W', 'B']);
 assert.deepEqual(opponentChoices('B'), ['M', 'P', 'Y', 'D', 'W', 'FINAL']);
 assert.deepEqual(opponentChoices('Br'), ['M', 'P', 'Y', 'D', 'W', 'FINAL']);
+assert.equal(teamMeta('M').label, 'Mario');
+assert.equal(teamMeta('Mr').label, 'Mario · Reversed');
+assert.equal(teamMeta('D').name, 'Donkey Kong');
+assert.equal(pitcherRole(playersOnTeam('M').find((player) => player.name === 'Mario')), 'Captain');
+assert.equal(pitcherRole(playersOnTeam('M').find((player) => player.name === 'Luigi')), 'Secondary');
 assert.equal(pitcherPool('Y').length, 9);
 assert.equal(pitcherPool('FINAL').length, 10);
 
@@ -51,6 +59,12 @@ assert.equal(formatRate(0.3), '.300');
 assert.equal(formatRate(1), '1.000');
 assert.equal(formatRate(1.204), '1.204');
 assert.equal(formatRate(2.519), '2.519');
+assert.equal(formatEra(null), '-.--');
+assert.equal(formatEra(0), '0.00');
+assert.equal(formatEra(3.456), '3.46');
+assert.equal(formatEra(12.3), '12.30');
+assert.equal(formatEra(100), '100.00');
+assert.equal(formatEra(135.204), '135.20');
 assert.equal(formatOpsPlus(null), '---');
 assert.equal(formatOpsPlus(130.4), '130');
 
@@ -76,10 +90,16 @@ doc = undoLastPlateAppearance(doc, game.id);
 assert.equal(gamePas(doc, game.id).length, 1);
 assert.equal(nextBatterId(doc, doc.games[0]), order[1]);
 
-assert.throws(() => addPlateAppearance(doc, { gameId: game.id, result: 'HR', rbi: 0 }), /runs scored/);
-doc = addPlateAppearance(doc, { gameId: game.id, result: 'HR', rbi: 4 });
-doc = addPlateAppearance(doc, { gameId: game.id, result: 'SF', rbi: 9 });
+doc = addPlateAppearance(doc, { gameId: game.id, result: 'HR' });
 assert.equal(gamePas(doc, game.id).at(-1).rbi, 1);
+doc = addPlateAppearance(doc, { gameId: game.id, result: 'HR', rbi: 4 });
+doc = addPlateAppearance(doc, { gameId: game.id, result: 'SF' });
+assert.equal(gamePas(doc, game.id).at(-1).rbi, 1);
+doc = addPlateAppearance(doc, { gameId: game.id, result: 'BB', rbi: 2 });
+assert.equal(gamePas(doc, game.id).at(-1).rbi, 2);
+doc = addPlateAppearance(doc, { gameId: game.id, result: 'GO', rbi: 1 });
+assert.equal(gamePas(doc, game.id).at(-1).rbi, 1);
+assert.throws(() => addPlateAppearance(doc, { gameId: game.id, result: 'K', rbi: 5 }), /0 to 4/);
 doc = addPlateAppearance(doc, { gameId: game.id, result: 'BB' });
 doc = addPlateAppearance(doc, { gameId: game.id, result: 'HBP' });
 doc = addPlateAppearance(doc, { gameId: game.id, result: 'DP' });
@@ -104,11 +124,12 @@ assert.ok(yoshiLine.pa >= 1);
 
 doc = lockGame(doc, game.id);
 assert.throws(() => addPlateAppearance(doc, { gameId: game.id, result: 'K' }), /locked/);
-assert.throws(() => updatePlateAppearance(doc, {
+doc = updatePlateAppearance(doc, {
   id: gamePas(doc, game.id)[0].id,
   result: 'GO',
   pitcherId: yoshi,
-}), /locked/);
+});
+assert.equal(gamePas(doc, game.id)[0].result, 'GO');
 
 doc = endRun(doc, run.id);
 assert.equal(doc.runs[0].status, 'complete');
@@ -117,8 +138,12 @@ assert.ok(beforeDelete > 0);
 doc = deleteGame(doc, game.id);
 assert.equal(doc.games.length, 0);
 assert.equal(doc.plateAppearances.length, 0);
+assert.equal(doc.runs.length, 1);
 assert.equal(battingLines(doc).reduce((sum, line) => sum + line.pa, 0), 0);
 assert.equal(pitchingLines(doc).length, 0);
+doc = deleteRun(doc, run.id);
+assert.equal(doc.runs.length, 0);
+assert.ok(doc.tombstones.some((mark) => mark.type === 'run' && mark.id === run.id));
 
 function pa(fields) {
   return {
@@ -162,6 +187,19 @@ assert.equal(mixedLine.obpText, '.545');
 assert.equal(mixedLine.slgText, '1.250');
 assert.equal(mixedLine.opsText, '1.795');
 assert.equal(mixedLine.opsPlus, null);
+const mixedPitch = pitchingLines(mixed).find((line) => line.playerId === pitcher);
+assert.equal(mixedPitch.rbi, 8);
+assert.equal(mixedPitch.eraText, '36.00');
+
+const clean = emptyDoc();
+clean.plateAppearances = ['a', 'b', 'c'].map((id, index) => pa({
+  id, batterId: batter, pitcherId: pitcher, result: 'GO', seq: index + 1,
+}));
+assert.equal(pitchingLines(clean)[0].eraText, '0.00');
+const noOuts = emptyDoc();
+noOuts.plateAppearances = [pa({ id: 'hr', batterId: batter, pitcherId: pitcher, result: 'HR', rbi: 1 })];
+assert.equal(pitchingLines(noOuts)[0].era, null);
+assert.equal(pitchingLines(noOuts)[0].eraText, '-.--');
 
 const alone = emptyDoc();
 alone.plateAppearances = [pa({ id: 'solo', batterId: 'a', pitcherId: 'p', result: 'HR', rbi: 1 })];

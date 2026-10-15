@@ -5,6 +5,7 @@ import {
   changePitcher,
   currentPitcherId,
   deleteGame,
+  deleteRun,
   describeResult,
   endRun,
   gamePas,
@@ -45,7 +46,6 @@ const ui = {
   error: '',
   modal: null,
   sheet: null,
-  pendingResult: null,
   edit: null,
   player: null,
   draft: null,
@@ -87,6 +87,30 @@ const BAT_COLS = [
   ['slg', 'SLG'],
   ['ops', 'OPS'],
   ['opsPlus', 'OPS+'],
+];
+
+const PITCH_COLS = [
+  ['name', 'Player'],
+  ['team', 'Tm'],
+  ['gp', 'APP'],
+  ['pa', 'BF'],
+  ['ab', 'AB'],
+  ['h', 'H'],
+  ['d2', '2B'],
+  ['d3', '3B'],
+  ['hr', 'HR'],
+  ['rbi', 'R'],
+  ['bb', 'BB'],
+  ['so', 'K'],
+  ['tb', 'TB'],
+  ['gdp', 'DP'],
+  ['hbp', 'HBP'],
+  ['sf', 'SF'],
+  ['ba', 'BA'],
+  ['obp', 'OBP'],
+  ['slg', 'SLG'],
+  ['ops', 'OPS'],
+  ['era', 'ERA'],
 ];
 
 function esc(value) {
@@ -209,11 +233,13 @@ function teamButton(teamId, action, selected) {
   const tone = team.id === 'FINAL' ? 'final' : team.baseId;
   const wide = team.id === 'FINAL' ? ' wide' : '';
   const rev = team.reversed ? '<span class="rev">Reversed</span>' : '';
-  const sub = team.id === 'FINAL' ? '<span class="rev">Captains and No. 2s</span>' : rev;
+  const sub = team.id === 'FINAL' ? '<span class="rev">Captains and secondaries</span>' : rev;
+  const picked = selected ? '<span class="picked">Selected</span>' : '';
   return `<button type="button" class="team-card team-${tone}${wide}${selected ? ' is-selected' : ''}" style="--c:${team.color};--ink:${team.ink}" data-action="${action}" data-team="${team.id}" aria-pressed="${selected ? 'true' : 'false'}">
     <span class="code">${esc(team.code)}</span>
     <span class="team-name">${esc(team.name)}</span>
     ${sub}
+    ${picked}
   </button>`;
 }
 
@@ -242,9 +268,9 @@ function resultButtons(action, selected) {
   return `<div class="result-grid">${main}</div><div class="small-grid">${extra}</div>`;
 }
 
-function rbiButtons(result, action) {
-  return RESULTS[result].rbi.map((runs) => (
-    `<button type="button" class="rbi" data-action="${action}" data-rbi="${runs}">${runs}</button>`
+function runButtons(action, selected) {
+  return [0, 1, 2, 3, 4].map((runs) => (
+    `<button type="button" class="rbi${selected === runs ? ' is-selected' : ''}" data-action="${action}" data-rbi="${runs}" aria-pressed="${selected === runs ? 'true' : 'false'}">${runs}</button>`
   )).join('');
 }
 
@@ -316,9 +342,11 @@ function viewRun(run) {
     ? `${live
       ? `<button type="button" class="primary" data-action="go" data-hash="#/game/${live.id}">Resume game</button>`
       : `<button type="button" class="primary" data-action="go" data-hash="#/run/${run.id}/new">Start game</button>`}
-      <button type="button" class="quiet" data-action="end-run" data-run="${run.id}">End challenge</button>`
-    : `<p class="note">This challenge is finished. Its games stay on the leaderboard.</p>
-      <button type="button" class="primary" data-action="go" data-hash="#/new">New challenge</button>`;
+      <button type="button" class="quiet" data-action="end-run" data-run="${run.id}">End challenge</button>
+      <button type="button" class="danger-text" data-action="delete-run" data-run="${run.id}">Delete challenge</button>`
+    : `<p class="note">Open a game to fix a play or remove that game. Delete the challenge to take every game in it off the leaderboard.</p>
+      <button type="button" class="primary" data-action="go" data-hash="#/new">New challenge</button>
+      <button type="button" class="danger-text" data-action="delete-run" data-run="${run.id}">Delete challenge</button>`;
   const list = games.length ? games.map((game) => {
     const count = gamePas(doc, game.id).length;
     const badge = game.status === 'live' ? 'Live' : 'Locked';
@@ -334,9 +362,24 @@ function viewRun(run) {
   <section class="block"><h2>Games</h2>${list}</section>`;
 }
 
-function ensureDraft(runId) {
-  if (!ui.draft || ui.draft.runId !== runId) {
-    ui.draft = { runId, opponentTeamId: null, pitcherId: null, lineup: [] };
+function previousLineup(run) {
+  const roster = new Set(playersOnTeam(run.teamId).map((player) => player.id));
+  const games = getDoc().games
+    .filter((game) => game.userTeamId === run.teamId && game.lineup?.length === 9 && game.lineup.every((id) => roster.has(id)))
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+  return games[0] ? [...games[0].lineup] : [];
+}
+
+function ensureDraft(run) {
+  if (!ui.draft || ui.draft.runId !== run.id) {
+    const lineup = previousLineup(run);
+    ui.draft = {
+      runId: run.id,
+      opponentTeamId: null,
+      pitcherId: null,
+      lineup,
+      carried: lineup.length === 9,
+    };
   }
   return ui.draft;
 }
@@ -347,7 +390,7 @@ function viewNewRun() {
 }
 
 function viewNewGame(run) {
-  const draft = ensureDraft(run.id);
+  const draft = ensureDraft(run);
   const options = opponentChoices(run.teamId);
   const roster = playersOnTeam(run.teamId);
   const remaining = roster.filter((player) => !draft.lineup.includes(player.id));
@@ -358,15 +401,17 @@ function viewNewGame(run) {
     return `<li><button type="button" data-action="lineup-remove" data-player="${id}"><span class="slot-no">${index + 1}</span>${esc(player.name)}</button></li>`;
   }).join('');
   const ready = draft.lineup.length === 9 && draft.opponentTeamId && (draft.opponentTeamId !== 'FINAL' || draft.pitcherId);
+  const opponent = draft.opponentTeamId ? teamMeta(draft.opponentTeamId) : null;
   const pitchers = draft.opponentTeamId === 'FINAL'
     ? `<section class="block"><h2>Starting pitcher</h2><div class="stack">${pitcherRows(pitcherPool('FINAL'), 'pick-starter', '', draft.pitcherId)}</div></section>`
     : '';
+  const carried = draft.carried ? ' Filled from the previous game. Clear it if this order is different.' : '';
   return `<button type="button" class="back" data-action="go" data-hash="#/run/${run.id}">Back to challenge</button>
-    <section class="block"><h2>Opponent</h2><div class="team-grid">${options.map((id) => teamButton(id, 'pick-opponent', draft.opponentTeamId === id)).join('')}</div></section>
+    <section class="block"><h2>Opponent${opponent ? ` · ${esc(opponent.label)}` : ''}</h2><div class="team-grid">${options.map((id) => teamButton(id, 'pick-opponent', draft.opponentTeamId === id)).join('')}</div></section>
     ${pitchers}
     <section class="block">
       <div class="row-title"><h2>Batting order</h2><button type="button" class="text-button" data-action="lineup-clear">Clear</button></div>
-      <p class="note">Tap the remaining players in the order they will hit. Tap a spot to remove that player.</p>
+      <p class="note">${opponent ? `Opponent: ${esc(opponent.label)}.` : 'Choose an opponent above.'} Tap a spot to remove that player.${carried}</p>
       <ol class="lineup">${slots}</ol>
       <div class="chip-wrap">${remaining.map((player) => `<button type="button" class="chip" data-action="lineup-add" data-player="${player.id}">${esc(player.name)}</button>`).join('')}</div>
     </section>
@@ -388,28 +433,28 @@ function viewAtBat(game) {
   }).join('');
   const last = pas.at(-1);
   const undo = last ? `<div class="undo-bar"><span>Last: ${esc(playerById(last.batterId)?.name || '')}, ${esc(describeResult(last))}</span><button type="button" data-action="undo-pa">Undo</button></div>` : '';
+  const lastRuns = last ? `<section class="runs-last">
+      <span><strong>Runs on last play</strong><small>${esc(playerById(last.batterId)?.name || '')} · ${esc(RESULTS[last.result]?.label || last.result)}</small></span>
+      <div class="runs-quick">${runButtons('last-runs', Number(last.rbi) || 0)}</div>
+    </section>` : '';
   const stints = gameStints(doc, game.id);
   const previous = stints.length > 1 ? playerById(stints[stints.length - 2].pitcherId) : null;
   const undoPitch = canUndoPitchingChange(doc, game.id) && previous
     ? `<button type="button" class="text-button" data-action="undo-pitch">Back to ${esc(previous.name)}</button>`
     : '';
-  const prompt = ui.pendingResult ? `<section class="panel">
-      <h2>How many runs scored?</h2>
-      <p class="note">${esc(RESULTS[ui.pendingResult].label)}. This is recorded as RBI.</p>
-      <div class="rbi-grid">${rbiButtons(ui.pendingResult, 'rbi')}</div>
-      <button type="button" class="text-button" data-action="rbi-back">Back</button>
-    </section>` : `<section class="panel">${resultButtons('result')}</section>`;
+  const prompt = `<section class="panel">${resultButtons('result')}</section>`;
   return `<div class="atbat" style="--c:${ours.color};--ink:${ours.ink}">
       <div class="atbat-top">
         <button type="button" class="text-button light" data-action="go" data-hash="#/run/${game.runId}">Challenge</button>
         <button type="button" class="text-button light" data-action="go" data-hash="#/game/${game.id}/plays">Plays</button>
       </div>
-      <p class="meta">vs ${esc(game.opponentTeamId === 'FINAL' ? 'Final' : teamMeta(game.opponentTeamId).label)} · Pitching ${esc(pitcher?.name || '—')} · RBI ${rbiTotal}</p>
+      <p class="meta">vs ${esc(game.opponentTeamId === 'FINAL' ? 'Final' : teamMeta(game.opponentTeamId).label)} · Pitching ${esc(pitcher?.name || '—')} · Runs ${rbiTotal}</p>
       <ol class="order-strip">${order}</ol>
       <p class="spot">No. ${spot} · PA ${pas.length + 1}</p>
       <h2 class="batter-name">${esc(batter?.name || 'Batter')}</h2>
     </div>
     ${undo}
+    ${lastRuns}
     ${prompt}
     <div class="action-row">
       <button type="button" data-action="show-pitch">Pitching change</button>
@@ -422,7 +467,7 @@ function viewReview(game) {
   return `<button type="button" class="back" data-action="resume">Resume game</button>
     <section class="block">
       <h2>${esc(matchup(game))}</h2>
-      <p class="note">Fix any plate appearance, then lock the game. After locking, the plays stay as they are unless you delete the whole game.</p>
+      <p class="note">Fix any plate appearance, then lock the game. You can still change a play later, or delete the game or the whole challenge.</p>
       ${playRows(game, true)}
     </section>
     <div class="stack">
@@ -432,10 +477,12 @@ function viewReview(game) {
 }
 
 function viewPlays(game) {
-  const editable = game.status === 'live';
-  return `<button type="button" class="back" data-action="go" data-hash="#/game/${game.id}">Back to at-bat</button>
-    <section class="block"><h2>${esc(matchup(game))}</h2>${playRows(game, editable)}</section>
-    ${editable ? `<button type="button" class="danger-text" data-action="abandon" data-game="${game.id}">Abandon game</button>` : ''}`;
+  const live = game.status === 'live';
+  return `<button type="button" class="back" data-action="go" data-hash="#/game/${game.id}">${live ? 'Back to at-bat' : 'Back to game'}</button>
+    <section class="block"><h2>${esc(matchup(game))}</h2>${playRows(game, true)}</section>
+    ${live
+      ? `<button type="button" class="danger-text" data-action="abandon" data-game="${game.id}">Abandon game</button>`
+      : `<button type="button" class="danger-text" data-action="delete-game" data-game="${game.id}">Delete this game</button>`}`;
 }
 
 function viewFinal(game) {
@@ -445,8 +492,8 @@ function viewFinal(game) {
   return `<button type="button" class="back" data-action="go" data-hash="#/run/${game.runId}">Back to challenge</button>
     <section class="block">
       <h2>${esc(matchup(game))}</h2>
-      <p class="note">Locked · ${count} PA · Started ${esc(starter?.name || '—')} · ${esc(formatWhen(game.endedAt || game.startedAt))}</p>
-      ${playRows(game, false)}
+      <p class="note">Tap a play to change it. ${count} PA · Started ${esc(starter?.name || '—')} · ${esc(formatWhen(game.endedAt || game.startedAt))}</p>
+      ${playRows(game, true)}
     </section>
     <button type="button" class="danger-text" data-action="delete-game" data-game="${game.id}">Delete this game</button>`;
 }
@@ -489,6 +536,7 @@ function statCell(row, key) {
   if (key === 'slg') return row.slgText;
   if (key === 'ops') return row.opsText;
   if (key === 'opsPlus') return row.opsPlusText;
+  if (key === 'era') return row.eraText || '-.--';
   if (key === 'name') return esc(row.name);
   return esc(row[key] ?? '');
 }
@@ -513,12 +561,7 @@ function viewStats() {
     const team = teamMeta(id);
     return `<option value="${id}"${id === teamId ? ' selected' : ''}>${esc(team.label)}</option>`;
   }).join('');
-  const columns = scope === 'pitch'
-    ? BAT_COLS.filter(([key]) => key !== 'opsPlus').map(([key, label]) => {
-      const renamed = { gp: 'APP', pa: 'BF', so: 'K', gdp: 'DP' };
-      return [key, renamed[key] || label];
-    })
-    : BAT_COLS;
+  const columns = scope === 'pitch' ? PITCH_COLS : BAT_COLS;
   let rows = [];
   let summary = null;
   let summaryPlus = false;
@@ -571,7 +614,7 @@ function viewStats() {
     </div>
     <details class="help"><summary>What the columns mean</summary>
       <p>GP games played, PA plate appearances, AB at-bats, H hits, 2B doubles, 3B triples, HR home runs, RBI runs batted in, BB walks, SO strikeouts, TB total bases, GDP double plays, HBP hit by pitch, SF sac flies, BA batting average, OBP on-base percentage, SLG slugging, OPS on-base plus slugging, OPS+ normalized OPS.</p>
-      <p>For pitchers, APP is appearances, BF is batters faced, K is strikeouts, and DP is double plays. A pitcher gets one appearance the first time they enter a game, even if they come back in later.</p>
+      <p>For pitchers, APP is appearances, BF is batters faced, R is runs, K is strikeouts, and DP is double plays. ERA is (27 × R) / (BF − H − BB − HBP + DP). A pitcher gets one appearance the first time they enter a game, even if they come back in later.</p>
     </details>
     <details class="help"><summary>How OPS+ is calculated</summary>
       <p>100 means the hitter's OPS matches what those pitchers have allowed to everyone else. 130 means it is 30% better than that expectation.</p>
@@ -705,14 +748,14 @@ function overlay() {
     const doc = getDoc();
     const pa = doc.plateAppearances.find((item) => item.id === ui.edit.id);
     const game = pa ? findGame(pa.gameId) : null;
-    if (pa && game && game.status === 'live') {
+    if (pa && game) {
       const batter = playerById(pa.batterId);
       const pool = pitcherPool(game.opponentTeamId);
-      const body = ui.edit.step === 'rbi'
-        ? `<h2>How many runs scored?</h2><div class="rbi-grid">${rbiButtons(ui.edit.result, 'edit-rbi')}</div><button type="button" class="text-button" data-action="edit-back">Back</button>`
-        : `<h2>Edit ${esc(batter?.name || 'plate appearance')}</h2>
+      const body = `<h2>Edit ${esc(batter?.name || 'plate appearance')}</h2>
           <div class="stack">${pitcherRows(pool, 'edit-pitcher', '', ui.edit.pitcherId)}</div>
-          ${resultButtons('edit-result', ui.edit.result)}`;
+          ${resultButtons('edit-result', ui.edit.result)}
+          <h3 class="runs-heading">Runs scored</h3>
+          <div class="rbi-grid">${runButtons('edit-rbi', ui.edit.rbi)}</div>`;
       pieces.push(`<div class="modal-back" data-action="backdrop"><div class="sheet">${body}<button type="button" class="quiet" data-action="edit-cancel">Close</button></div></div>`);
     }
   }
@@ -729,7 +772,7 @@ function overlay() {
         })[0];
       const line = source || null;
       const labels = side === 'pitch'
-        ? [['gp', 'APP'], ['pa', 'BF'], ['ab', 'AB'], ['h', 'H'], ['d2', '2B'], ['d3', '3B'], ['hr', 'HR'], ['rbi', 'RBI'], ['bb', 'BB'], ['so', 'K'], ['tb', 'TB'], ['gdp', 'DP'], ['hbp', 'HBP'], ['sf', 'SF'], ['ba', 'BA'], ['obp', 'OBP'], ['slg', 'SLG'], ['ops', 'OPS']]
+        ? PITCH_COLS.filter(([key]) => key !== 'name' && key !== 'team')
         : BAT_COLS.filter(([key]) => key !== 'name' && key !== 'team');
       const cards = line ? labels.map(([key, label]) => `<div><dt>${label}</dt><dd>${statCell(decorate(line), key)}</dd></div>`).join('') : '';
       const versus = side === 'pitch' ? `<button type="button" class="primary" data-action="hitters-vs" data-pitcher="${player.id}">Hitters against ${esc(player.name)}</button>` : '';
@@ -803,7 +846,6 @@ function resetTransient() {
   const resolve = ui.modal?.resolve;
   ui.modal = null;
   ui.sheet = null;
-  ui.pendingResult = null;
   ui.edit = null;
   ui.player = null;
   ui.error = '';
@@ -858,6 +900,22 @@ async function onAction(action, dataset) {
     if (ok && runId) go(`#/run/${runId}`);
     return;
   }
+  if (action === 'delete-run') {
+    const run = findRun(dataset.run);
+    if (!run) return;
+    const games = getDoc().games.filter((game) => game.runId === run.id);
+    const gameIds = new Set(games.map((game) => game.id));
+    const count = getDoc().plateAppearances.filter((pa) => gameIds.has(pa.gameId)).length;
+    const ok = await ask({
+      title: 'Delete this challenge?',
+      body: `${teamMeta(run.teamId).label} has ${games.length} game${games.length === 1 ? '' : 's'} and ${count} plate appearance${count === 1 ? '' : 's'}. Deleting it removes those stats from the leaderboard.`,
+      confirm: 'Delete challenge',
+      danger: true,
+    });
+    if (!ok) return;
+    if (tryCommit((doc) => deleteRun(doc, run.id), 'now')) go('#/history');
+    return;
+  }
   if (action === 'end-run') {
     const ok = await ask({
       title: 'End this challenge?',
@@ -882,17 +940,20 @@ async function onAction(action, dataset) {
   if (action === 'lineup-add') {
     if (!ui.draft.lineup.includes(dataset.player) && ui.draft.lineup.length < 9) {
       ui.draft.lineup = [...ui.draft.lineup, dataset.player];
+      ui.draft.carried = false;
     }
     render();
     return;
   }
   if (action === 'lineup-remove') {
     ui.draft.lineup = ui.draft.lineup.filter((id) => id !== dataset.player);
+    ui.draft.carried = false;
     render();
     return;
   }
   if (action === 'lineup-clear') {
     ui.draft.lineup = [];
+    ui.draft.carried = false;
     render();
     return;
   }
@@ -918,39 +979,35 @@ async function onAction(action, dataset) {
   if (action === 'result') {
     const def = RESULTS[dataset.result];
     if (!def) return;
-    if (def.rbi) {
-      ui.pendingResult = dataset.result;
-      render();
-      return;
-    }
     if (tooFast()) return;
     const game = liveGame();
     if (!game) return;
-    if (tryCommit((doc) => addPlateAppearance(doc, { gameId: game.id, result: dataset.result, rbi: 0 }), 'soon')) {
+    if (tryCommit((doc) => addPlateAppearance(doc, {
+      gameId: game.id,
+      result: dataset.result,
+      rbi: def.defaultRuns || 0,
+    }), 'soon')) {
       navigator.vibrate?.(12);
     }
     return;
   }
-  if (action === 'rbi') {
-    if (tooFast()) return;
+  if (action === 'last-runs') {
     const game = liveGame();
-    const result = ui.pendingResult;
-    if (!game || !result) return;
-    ui.pendingResult = null;
-    if (tryCommit((doc) => addPlateAppearance(doc, { gameId: game.id, result, rbi: Number(dataset.rbi) }), 'soon')) {
+    const last = game ? gamePas(getDoc(), game.id).at(-1) : null;
+    if (!game || !last) return;
+    if (tryCommit((doc) => updatePlateAppearance(doc, {
+      id: last.id,
+      result: last.result,
+      rbi: Number(dataset.rbi),
+      pitcherId: last.pitcherId,
+    }), 'soon')) {
       navigator.vibrate?.(12);
     }
-    return;
-  }
-  if (action === 'rbi-back') {
-    ui.pendingResult = null;
-    render();
     return;
   }
   if (action === 'undo-pa') {
     const game = liveGame();
     if (!game) return;
-    ui.pendingResult = null;
     tryCommit((doc) => undoLastPlateAppearance(doc, game.id), 'soon');
     return;
   }
@@ -980,7 +1037,7 @@ async function onAction(action, dataset) {
   if (action === 'lock-game') {
     const ok = await ask({
       title: 'Lock this game?',
-      body: 'You will not be able to edit these plate appearances afterward. You can still delete the whole game if it does not belong on the leaderboard.',
+      body: 'The at-bat screen closes. You can still fix a play, delete this game, or delete the whole challenge.',
       confirm: 'Lock game',
     });
     if (!ok) return;
@@ -1006,17 +1063,12 @@ async function onAction(action, dataset) {
   if (action === 'edit-pa') {
     const pa = getDoc().plateAppearances.find((item) => item.id === dataset.pa);
     if (!pa) return;
-    ui.edit = { id: pa.id, result: pa.result, pitcherId: pa.pitcherId, step: 'result' };
+    ui.edit = { id: pa.id, result: pa.result, rbi: Number(pa.rbi) || 0, pitcherId: pa.pitcherId };
     render();
     return;
   }
   if (action === 'edit-cancel') {
     ui.edit = null;
-    render();
-    return;
-  }
-  if (action === 'edit-back') {
-    if (ui.edit) ui.edit.step = 'result';
     render();
     return;
   }
@@ -1036,32 +1088,26 @@ async function onAction(action, dataset) {
   if (action === 'edit-result') {
     if (!ui.edit) return;
     ui.edit.result = dataset.result;
-    if (RESULTS[dataset.result].rbi) {
-      ui.edit.step = 'rbi';
-      render();
-      return;
-    }
     const edit = ui.edit;
-    const ok = tryCommit((doc) => updatePlateAppearance(doc, {
+    tryCommit((doc) => updatePlateAppearance(doc, {
       id: edit.id,
       result: edit.result,
-      rbi: 0,
+      rbi: edit.rbi,
       pitcherId: edit.pitcherId,
     }), 'soon');
-    if (ok) ui.edit = null;
     render();
     return;
   }
   if (action === 'edit-rbi') {
     if (!ui.edit) return;
     const edit = ui.edit;
-    const ok = tryCommit((doc) => updatePlateAppearance(doc, {
+    edit.rbi = Number(dataset.rbi);
+    tryCommit((doc) => updatePlateAppearance(doc, {
       id: edit.id,
       result: edit.result,
-      rbi: Number(dataset.rbi),
+      rbi: edit.rbi,
       pitcherId: edit.pitcherId,
     }), 'soon');
-    if (ok) ui.edit = null;
     render();
     return;
   }
@@ -1078,7 +1124,7 @@ async function onAction(action, dataset) {
     if (ui.stats.sort === dataset.key) ui.stats.dir = ui.stats.dir === 'asc' ? 'desc' : 'asc';
     else {
       ui.stats.sort = dataset.key;
-      ui.stats.dir = dataset.key === 'name' || dataset.key === 'team' ? 'asc' : 'desc';
+      ui.stats.dir = dataset.key === 'name' || dataset.key === 'team' || dataset.key === 'era' ? 'asc' : 'desc';
     }
     render();
     return;

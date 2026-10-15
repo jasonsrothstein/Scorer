@@ -1,12 +1,12 @@
 const BASE_TEAMS = ['M', 'P', 'Y', 'D', 'W', 'B'];
 
 const TEAM_META = {
-  M: { name: "Mario's", captain: 'Mario', numberTwo: 'Luigi', color: '#c8102e', ink: '#ffffff' },
-  P: { name: "Peach's", captain: 'Peach', numberTwo: 'Daisy', color: '#f3b6cf', ink: '#3d1630' },
-  Y: { name: "Yoshi's", captain: 'Yoshi', numberTwo: 'Birdo', color: '#2f9e44', ink: '#ffffff' },
-  D: { name: "Donkey Kong's", captain: 'Donkey Kong', numberTwo: 'Diddy Kong', color: '#f0b429', ink: '#2a1604' },
-  W: { name: "Wario's", captain: 'Wario', numberTwo: 'Waluigi', color: '#6c3483', ink: '#ffffff' },
-  B: { name: "Bowser's", captain: 'Bowser', numberTwo: 'Bowser Jr.', color: '#242424', ink: '#f2c14b' },
+  M: { name: 'Mario', captain: 'Mario', numberTwo: 'Luigi', color: '#c8102e', ink: '#ffffff' },
+  P: { name: 'Peach', captain: 'Peach', numberTwo: 'Daisy', color: '#f3b6cf', ink: '#3d1630' },
+  Y: { name: 'Yoshi', captain: 'Yoshi', numberTwo: 'Birdo', color: '#2f9e44', ink: '#ffffff' },
+  D: { name: 'Donkey Kong', captain: 'Donkey Kong', numberTwo: 'Diddy Kong', color: '#f0b429', ink: '#2a1604' },
+  W: { name: 'Wario', captain: 'Wario', numberTwo: 'Waluigi', color: '#6c3483', ink: '#ffffff' },
+  B: { name: 'Bowser', captain: 'Bowser', numberTwo: 'Bowser Jr.', color: '#242424', ink: '#f2c14b' },
 };
 
 const ROSTERS = {
@@ -125,7 +125,7 @@ function opponentChoices(userTeamId) {
 
 function pitcherRole(player) {
   if (player.isCaptain) return 'Captain';
-  if (player.isNumberTwo) return 'No. 2';
+  if (player.isNumberTwo) return 'Secondary';
   return '';
 }
 
