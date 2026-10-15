@@ -1,9 +1,1 @@
-{
-  "version": 1,
-  "updatedAt": null,
-  "runs": [],
-  "games": [],
-  "stints": [],
-  "plateAppearances": [],
-  "tombstones": []
-}
+{"version":1,"updatedAt":"2026-10-15T04:55:09.460Z","runs":[{"id":"58ae6d9e-e3be-41ec-82e6-4d3ed90e1106","teamId":"M","status":"active","startedAt":"2026-10-15T04:55:09.460Z","endedAt":null,"updatedAt":"2026-10-15T04:55:09.460Z"}],"games":[],"stints":[],"plateAppearances":[],"tombstones":[]}
