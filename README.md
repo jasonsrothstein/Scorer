@@ -27,3 +27,5 @@ The phone commits `data/stats.json` when you play. Pull that file before you com
 ```bash
 node js/selftest.js
 ```
+
+*git test*
